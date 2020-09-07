@@ -7,15 +7,22 @@ import io
 import time
 import random
 import sys
-from virtual_iridium.smtp_stuff import sendMail 
-from virtual_iridium.imap_stuff import checkMessages
+from smtp_stuff import sendMail 
+from imap_stuff import checkMessages
 import socket
 import struct
 import asyncore
+import requests
+import threading
+from BaseHTTPServer import BaseHTTPRequestHandler
+import SimpleHTTPServer 
+import SocketServer
+import Queue 
+import signal 
 from collections import deque
-from virtual_iridium.sbd_packets import assemble_mo_directip_packet
-from virtual_iridium.sbd_packets import parse_mt_directip_packet
-from virtual_iridium.sbd_packets import assemble_mt_directip_response
+from sbd_packets import assemble_mo_directip_packet
+from sbd_packets import parse_mt_directip_packet
+from sbd_packets import assemble_mt_directip_response
 
 AVERAGE_SBDIX_DELAY = 1     #TODO: implement randomness, average is ~30s
 STDEV_SBDIX_DELAY = 1 
@@ -75,6 +82,38 @@ ip_enabled = False
 http_post_enabled = False
 
 mt_messages = deque()
+
+#Set-up a queue
+http_queue = Queue.Queue(0)
+http_post_endpoint = ""
+SocketServer.TCPServer.allow_reuse_address = True
+
+class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
+    global http_queue
+    def do_POST(self):
+        print("Handling post request")
+        content_len = int(self.headers['Content-Length'])
+        body = str(self.rfile.read(content_len))
+        rec_msg = body 
+        http_queue.put(rec_msg)
+        self.send_response(200)
+        self.end_headers()
+
+httpd = SocketServer.TCPServer(("", 8080), SimpleHTTPRequestHandler)
+
+class runServer(threading.Thread):
+    def __init__(self, port):
+        threading.Thread.__init__(self)
+        self.port = port
+    def run(self):
+        print "Serving at port", self.port
+        httpd.serve_forever()
+
+def signal_handler(sig, frame):
+    global httpd 
+    print('Server closing...')
+    httpd.shutdown()
+    sys.exit(0)
 
 def send_mo_email():
     global lat
@@ -155,6 +194,11 @@ def sbdix():
     global mo_ip
     global mo_port
     global mt_set
+    global mo_buffer
+    global momsn
+    global mtmsn
+    global http_queue
+    global http_post_endpoint
 
     has_incoming_msg = False
     received_msg = 0
@@ -205,6 +249,19 @@ def sbdix():
                 unread_msgs = len(mt_messages)
                 received_msg = mt_set
                 received_msg_size = len(mt_buffer)
+        elif http_post_enabled:
+            if mo_set and not mo_buffer == "":
+                r = requests.post(http_post_endpoint, data=mo_buffer)
+                mo_set = False 
+                momsn += 1
+            elif http_queue.qsize() > 0:
+                temp = http_queue.get()
+                received_msg_size = len(temp)
+                mt_buffer = temp
+                mtmsn += 1
+                mt_set = True 
+                received_msg = mt_set
+            unread_msgs = http_queue.qsize()
 
     #TODO: generate result output
     if success: rpt = 0
@@ -219,6 +276,7 @@ def sbdix():
     mo_set = False
     if received_msg:
         mtmsn += 1
+
 def sbd_reg():
     global registered
     
@@ -248,26 +306,14 @@ def sbd_det():
     
 def read_text():
     global mt_buffer
+    print(mt_buffer)
     ser.write("\n+SBDRT:\r\n%s\r\n" % (mt_buffer))
     send_ok()
 
 def read_binary():
     global mt_buffer
-    len_msb = ( len(mt_buffer)/256 ) & 255 
-    len_lsb = ( len(mt_buffer)/1 ) & 255 
-    mt_buffer_sum = sum(bytearray(mt_buffer)) 
-    checksum_msb =  ((mt_buffer_sum & (2**16-1)) / (255) ) & 255
-    checksum_lsb =  ((mt_buffer_sum & (2**16-1)) / (1) ) & 255
     print "Device is reading binary from MT buffer: ",mt_buffer
-    #array.array
-    #ser.write(len_msb)
-    #ser.write(len_lsb)
-    #ser.write(mt_buffer)
-    #ser.write(checksum_msb)
-    #ser.write(checksum_lsb)
-    ser.write("%s%s%s%s%s" % (chr(len_msb), chr(len_lsb), mt_buffer,chr(checksum_msb),chr(checksum_lsb)) )
-    print "\r\n%s%s%s%s%s" % (chr(len_msb), chr(len_lsb), mt_buffer,chr(checksum_msb),chr(checksum_lsb))
-    print checksum_msb, checksum_lsb, len_msb, len_lsb, mt_buffer
+    ser.write("\n+SBDRB:\r\n%s\r\n" % (mt_buffer))
     send_ok()
     
 
@@ -577,10 +623,13 @@ def main():
 
     global echo
 
+    global http_queue
+    global http_post_endpoint
+
 
     parser = OptionParser()
     parser.add_option("-d", "--dev", dest="dev", action="store", help="tty dev(ex. '/dev/ttyUSB0'", metavar="DEV")
-    parser.add_option("-p", "--passwd", dest="passwd", action="store", help="Password", metavar="PASSWD")
+    parser.add_option("--passwd", dest="passwd", action="store", help="Password", metavar="PASSWD")
     parser.add_option("-u", "--user", dest="user", action="store", help="E-mail account username", metavar="USER")
     parser.add_option("-r", "--recipient", dest="recipient", action="store", help="Destination e-mail address.", metavar="USER")
     parser.add_option("-i", "--in_srv", dest="in_srv", action="store", help="Incoming e-mail server url", metavar="IN_SRV")
@@ -589,12 +638,12 @@ def main():
     parser.add_option("--mo_port", dest="mo_port", action="store", help="Mobile-originated DirectIP server Port", metavar="MO_PORT", default=10801)
     parser.add_option("--mt_port", dest="mt_port", action="store", help="Mobile-terminated DirectIP server Port", metavar="MT_PORT", default=10800)
     parser.add_option("-m", "--mode", dest="mode", action="store", help="Mode: EMAIL,HTTP_POST,IP,NONE", default="NONE", metavar="MODE")
-    parser.add_option("-e", "--imei", dest="imei", action="store", help="IMEI for this modem", default="300234060379270", metavar="MODE")
+    parser.add_option("--imei", dest="imei", action="store", help="IMEI for this modem", default="300234060379270", metavar="MODE")
 
     (options, args) = parser.parse_args()
 
     mt_port = int(options.mt_port)
-    
+
     #check for valid arguments
     if options.mode == "EMAIL":
         if options.passwd is None  or options.user is None or options.recipient is None or options.in_srv is None or options.out_srv is None:
@@ -603,8 +652,12 @@ def main():
         else:
             email_enabled = True
     elif options.mode == "HTTP_POST":
-        print 'Not implemented yet'
-        sys.exit()
+         if len(sys.argv) != 7:
+             print "You have missing arguments."
+             print "Usage: python2 Iridium9602.py <land_server_endpoint> <server_port_number> -d <serial_port> -m HTTP_POST" 
+             sys.exit()
+         else:
+             http_post_enabled = True
     elif options.mode == "IP":
         print 'Using IP mode with MO ({}:{}) and MT (0.0.0.0:{}) servers'.format(options.mo_ip, int(options.mo_port), options.mt_port)
         server = MobileTerminatedServer('0.0.0.0', mt_port)
@@ -625,7 +678,7 @@ def main():
     mo_ip = options.mo_ip
     mo_port = int(options.mo_port)
     imei = options.imei
-
+    
     now_get_checksum_first = False
     now_get_checksum_second = False
     
@@ -637,19 +690,32 @@ def main():
 #        print list_serial_ports()
         sys.exit()
     
+   #Runs server 
+    try:
+        server_port = int(sys.argv[2])
+        http_post_endpoint = sys.argv[1]
+        server = runServer(server_port)
+        server.start()
+    except:
+        print "Could not start server.  Exiting."
+        sys.exit()
+
     rx_buffer = ''
     
     binary_checksum = 0
     
     while(1):
+        signal.signal(signal.SIGINT, signal_handler)
+
         if ip_enabled:
             asyncore.loop(timeout=0, count=1) # non-blocking loop
 
         new_char = ser.read() # timeout after .1 seconds to return to asyncore.loop()
         if (len(new_char) == 0):
             continue 
+         
+        print(new_char)
 
-        #print new_char
         if echo and not binary_rx:
             ser.write(new_char)
             
@@ -702,8 +768,8 @@ def main():
                     binary_rx_incoming_bytes -= 1
                     rx_buffer = rx_buffer + new_char
                     binary_checksum = binary_checksum + ord(new_char)
-                
-             
+           
+         
                 
 if __name__ == '__main__':
     main()

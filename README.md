@@ -14,7 +14,19 @@ In your Unix shell of choice:
 ```
  $ git clone https://github.com/jmalsbury/virtual_iridium
  $ cd virtual_iridium/python
+ FOR EMAIL MODE:
  $ python Iridium9602.py -d /dev/ttyUSB0 -u youraccount@gmail.com -p your_password -i imap.gmail.com -o smtp.gmail.com -r your_iridium_test_account@gmail.com -m EMAIL
+
+ FOR HTTP_POST MODE:
+ $ python2 Iridium9602.py <land_server_endpoint> <server_port_number> -d <serial_device> -m HTTP_POST
+   
+   <land_server_endpoint> is the ip/location of the land_satellite_listener server.
+
+   <server_port_number> the port the iridium handler will be running on.
+
+   <serial_device> one of the socat pairs created. READ the bbb_rockblock_listener README for more info. 
+
+   (ex. python2 Iridium9602.py <http://localhost:8000> <8080> -d /dev/pts/5 -m HTTP_POST)  
 ```
 The specified serial device, in the example above: ttyUSB0 , should connect to the external device that you are developing your Iridium communications app on. You can also use a virtual serial port (like a pair of SOCAT TTYs), to connect to another application on the same PC.
 
