@@ -99,7 +99,6 @@ class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.end_headers()
 
-httpd = SocketServer.TCPServer(("", 8080), SimpleHTTPRequestHandler)
 
 class runServer(threading.Thread):
     def __init__(self, port):
@@ -107,6 +106,7 @@ class runServer(threading.Thread):
         self.port = port
     def run(self):
         print "Serving at port", self.port
+        httpd = SocketServer.TCPServer(("", self.port), SimpleHTTPRequestHandler)
         httpd.serve_forever()
 
 def signal_handler(sig, frame):
