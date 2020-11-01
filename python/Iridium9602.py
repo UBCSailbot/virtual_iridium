@@ -85,7 +85,7 @@ mt_messages = deque()
 
 #Set-up a queue
 http_queue = Queue.Queue(0)
-http_post_endpoint = ""
+webhook_server_endpoint = ""
 SocketServer.TCPServer.allow_reuse_address = True
 
 class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
@@ -198,7 +198,7 @@ def sbdix():
     global momsn
     global mtmsn
     global http_queue
-    global http_post_endpoint
+    global webhook_server_endpoint
 
     has_incoming_msg = False
     received_msg = 0
@@ -251,7 +251,7 @@ def sbdix():
                 received_msg_size = len(mt_buffer)
         elif http_post_enabled:
             if mo_set and not mo_buffer == "":
-                r = requests.post(http_post_endpoint, data=mo_buffer)
+                r = requests.post(webhook_server_endpoint, data=mo_buffer)
                 mo_set = False 
                 momsn += 1
             elif http_queue.qsize() > 0:
@@ -624,7 +624,7 @@ def main():
     global echo
 
     global http_queue
-    global http_post_endpoint
+    global webhook_server_endpoint
 
 
     parser = OptionParser()
@@ -639,6 +639,10 @@ def main():
     parser.add_option("--mt_port", dest="mt_port", action="store", help="Mobile-terminated DirectIP server Port", metavar="MT_PORT", default=10800)
     parser.add_option("-m", "--mode", dest="mode", action="store", help="Mode: EMAIL,HTTP_POST,IP,NONE", default="NONE", metavar="MODE")
     parser.add_option("--imei", dest="imei", action="store", help="IMEI for this modem", default="300234060379270", metavar="MODE")
+    
+    # HTTP related args
+    parser.add_option("--webhook_server_endpoint", dest="webhook_server_endpoint", action="store", help="Where to post webhooks", default=None)
+    parser.add_option("--http_server_port", dest="http_server_port", action="store", help="Port number for the http server", default=None)
 
     (options, args) = parser.parse_args()
 
@@ -652,12 +656,12 @@ def main():
         else:
             email_enabled = True
     elif options.mode == "HTTP_POST":
-         if len(sys.argv) != 7:
+         http_post_enabled = True
+         if options.webhook_server_endpoint is None or options.http_server_port is None:
              print "You have missing arguments."
-             print "Usage: python2 Iridium9602.py <land_server_endpoint> <server_port_number> -d <serial_port> -m HTTP_POST" 
+             print "Usage: python2 Iridium9602.py --webhook_server_endpoint <webhook_server_endpoint>\
+                     --http_server_port <http_server_port> -d <serial_port> -m HTTP_POST" 
              sys.exit()
-         else:
-             http_post_enabled = True
     elif options.mode == "IP":
         print 'Using IP mode with MO ({}:{}) and MT (0.0.0.0:{}) servers'.format(options.mo_ip, int(options.mo_port), options.mt_port)
         server = MobileTerminatedServer('0.0.0.0', mt_port)
@@ -690,15 +694,16 @@ def main():
 #        print list_serial_ports()
         sys.exit()
     
-   #Runs server 
-    try:
-        server_port = int(sys.argv[2])
-        http_post_endpoint = sys.argv[1]
-        server = runServer(server_port)
-        server.start()
-    except:
-        print "Could not start server.  Exiting."
-        sys.exit()
+    if http_post_enabled:
+        # Runs server 
+        try:
+            webhook_server_endpoint = options.webhook_server_endpoint
+            server_port = int(options.http_server_port)
+            server = runServer(server_port)
+            server.start()
+        except:
+            print "Could not start server.  Exiting."
+            sys.exit()
 
     rx_buffer = ''
     
